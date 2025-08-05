@@ -29,12 +29,14 @@ cat > $SERVICE_FILE <<EOF
 [Unit]
 Description=Mount Manager
 After=multi-user.target
+After=mountmgr.service
 Wants=network.target
 
 [Service]
 Type=simple
 ExecStart=$PYTHON $SCRIPT_DIR/mount_manager.py
 Restart=always
+RestartSec=5
 User=root
 
 [Install]
