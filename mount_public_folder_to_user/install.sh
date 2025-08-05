@@ -34,7 +34,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=$PYTHON $SCRIPT_DIR/mount_manager.py
+ExecStart=$PYTHON $SCRIPT_DIR/script.py
 Restart=always
 RestartSec=5
 User=root
