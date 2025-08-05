@@ -3,7 +3,7 @@ import json
 import logging
 import sys
 import time
-from typing import Dict, Any, List, Literal, Tuple, Set
+from typing import Dict, Any, List, Literal, Tuple, Set, Optional
 from dataclasses import dataclass
 import grp
 import pwd
@@ -288,20 +288,47 @@ def main():
 ##################################################
 # 监听目录
 
+_config_last_modified: Optional[float] = None
+_config_pending = False
+
 class Vol1EventHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
-            print(f"检测到新目录: {event.src_path}，重新检查挂载")
+            logger.info(f"检测到新目录: {event.src_path}，重新检查挂载")
             main()
 
-def watch_vol1():
+class ConfigFileEventHandler(FileSystemEventHandler):
+    @staticmethod
+    def _maybe_handle(src_path):
+        if src_path == str(CFG_FILE):
+            global _config_last_modified, _config_pending
+            _config_last_modified = time.time()
+            _config_pending = True
+            logger.info(f"检测到配置文件 {src_path} 被修改，15秒后自动重新挂载。")
+
+    def on_modified(self, event):
+        self._maybe_handle(event.src_path)
+    def on_created(self, event):
+        self._maybe_handle(event.src_path)
+    def on_moved(self, event):
+        self._maybe_handle(event.dest_path)  # 注意 FileMovedEvent 有 dest_path
+
+def watch_vol1_and_cfg_blocking():
     observer = Observer()
-    event_handler = Vol1EventHandler()
-    observer.schedule(event_handler, str(Path('/vol1')), recursive=False)
+    observer.schedule(Vol1EventHandler(), str(Path('/vol1')), recursive=False)
+    observer.schedule(ConfigFileEventHandler(), str(CFG_FILE.parent), recursive=False)
     observer.start()
+
+    global _config_last_modified, _config_pending
     try:
         while True:
             time.sleep(1)
+            if _config_pending and _config_last_modified is not None:
+                dt = time.time() - _config_last_modified
+                if dt > 15:
+                    logger.info("配置文件变更15秒后，自动重新挂载")
+                    main()
+                    _config_pending = False   # 重置，直到下次有新的变更
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
@@ -315,5 +342,5 @@ if __name__ == '__main__':
     logger.info("正在运行...")
     main()
     # 监听 /vol1 目录变更
-    logger.info("开始监听 /vol1 目录变更...")
-    watch_vol1()
+    logger.info("开始监听 /vol1 目录和 config.ini 变更...")
+    watch_vol1_and_cfg_blocking()
