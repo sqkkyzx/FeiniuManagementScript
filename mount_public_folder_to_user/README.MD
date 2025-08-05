@@ -71,12 +71,12 @@ sudo python3 script.py
 将脚本编写为 systemd 服务，以便于脚本开机自动启动。
 
 ```sh
-sudo nano /etc/systemd/system/mount_manager.service
+sudo nano /etc/systemd/system/mount_public_manager.service
 ```
 
 ```
 [Unit]
-Description=Mount Manager
+Description=Mount Public Manager
 After=multi-user.target
 Wants=network.target
 
