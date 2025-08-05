@@ -56,6 +56,25 @@ def save_mounted_records(current_targets: Set[Tuple[str, str]]):
     with open(RECORD_FILE, 'w', encoding='utf-8') as f:
         json.dump(current_targets_dicts, f, ensure_ascii=True, indent=2)
 
+def is_empty_dir(path: Path) -> bool:
+    try:
+        return path.is_dir() and not any(path.iterdir())
+    except Exception as e:
+        logger.error(f"检查目录 {path} 是否为空时出错: {e}")
+        return False
+
+def remove_dir_if_empty(path: Path):
+    if is_empty_dir(path):
+        try:
+            path.rmdir()
+            logger.info(f"已删除空目录：{path}")
+            return True
+        except Exception as e:
+            logger.error(f"删除目录 {path} 失败: {e}")
+            return False
+    else:
+        return False
+
 def unmount_obsolete_mounts(config_targets: Set[Tuple[str, str]]):
     mounted_records: Set[Tuple[str, str]] = load_mounted_records()
     obsolete = mounted_records - config_targets
@@ -63,8 +82,19 @@ def unmount_obsolete_mounts(config_targets: Set[Tuple[str, str]]):
         try:
             subprocess.run(['umount', dst], check=True)
             logger.info(f"卸载过期挂载：{dst}")
+            remove_dir_if_empty(Path(dst))
         except Exception as e:
-            logger.error(f"卸载 {dst} 失败：{e}")
+            logger.error(f"卸载 {dst} 失败，使用 Lazy 模式重试中：{e}")
+            try:
+                subprocess.run(['umount', '-l', dst], check=True)
+                logger.info(f"Lazy 模式卸载 {dst} 成功，开始检测是否可删除目录")
+                for i in range(5):
+                    if remove_dir_if_empty(Path(dst)):
+                        break
+                    else:
+                        logger.warning(f"目录 {dst} 尝试 {i+1} 次仍未变为空，未删除。")
+            except Exception as e2:
+                logger.error(f"Lazy 模式卸载 {dst} 也失败：{e2}")
 
 
 ###############################################
