@@ -82,7 +82,8 @@ def unmount_obsolete_mounts(config_targets: Set[Tuple[str, str]]):
         try:
             subprocess.run(['umount', dst], check=True)
             logger.info(f"卸载过期挂载：{dst}")
-            remove_dir_if_empty(Path(dst))
+            if not remove_dir_if_empty(Path(dst)):
+                raise
         except Exception as e:
             logger.error(f"卸载 {dst} 失败，使用 Lazy 模式重试中：{e}")
             try:
