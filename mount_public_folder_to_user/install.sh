@@ -33,7 +33,6 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=/bin/sleep 10
 ExecStart=$PYTHON $SCRIPT_DIR/mount_manager.py
 Restart=always
 User=root

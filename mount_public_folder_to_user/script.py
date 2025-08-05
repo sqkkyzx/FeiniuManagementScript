@@ -251,5 +251,9 @@ def watch_vol1():
 
 
 if __name__ == '__main__':
+    # 开机启动时先等待10秒
+    time.sleep(10)
+    # 立刻运行一次
     main()
+    # 监听 /vol1 目录变更
     watch_vol1()
