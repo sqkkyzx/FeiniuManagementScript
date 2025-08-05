@@ -68,7 +68,9 @@ sudo python3 script.py
 
 3. 编写 systemd 服务
 
-将脚本编写为 systemd 服务，以便于脚本开机自动启动。
+可以运行 `chmod +x install.sh` `sudo ./install.sh` 安装服务。
+
+或者按照以下步骤手动创建服务：
 
 ```sh
 sudo nano /etc/systemd/system/mount_public_manager.service
