@@ -1,6 +1,7 @@
 import configparser
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import time
 from typing import Dict, Any, List, Literal, Tuple, Set, Optional
@@ -21,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a'),
+        logging.handlers.RotatingFileHandler(LOG_FILE, encoding='utf-8', mode='a', maxBytes=500 * 1024),
         logging.StreamHandler(sys.stdout),  # 保留打印到控制台
     ]
 )
@@ -75,14 +76,25 @@ def remove_dir_if_empty(path: Path):
     else:
         return False
 
+
 def unmount_obsolete_mounts(config_targets: Set[Tuple[str, str]]):
     mounted_records: Set[Tuple[str, str]] = load_mounted_records()
     obsolete = mounted_records - config_targets
+
     for src, dst in obsolete:
+        dst_path = Path(dst)
+
+        # 先检查是否真的还是挂载点
+        if not is_mount_point(dst_path):
+            logger.info(f"{dst} 已经不是挂载点，跳过卸载")
+            # 尝试删除空目录
+            remove_dir_if_empty(dst_path)
+            continue
+
         try:
             subprocess.run(['umount', dst], check=True)
             logger.info(f"卸载过期挂载：{dst}")
-            if not remove_dir_if_empty(Path(dst)):
+            if not remove_dir_if_empty(dst_path):
                 raise
         except Exception as e:
             logger.error(f"卸载 {dst} 失败，使用 Lazy 模式重试中：{e}")
@@ -90,10 +102,14 @@ def unmount_obsolete_mounts(config_targets: Set[Tuple[str, str]]):
                 subprocess.run(['umount', '-l', dst], check=True)
                 logger.info(f"Lazy 模式卸载 {dst} 成功，开始检测是否可删除目录")
                 for i in range(5):
-                    if remove_dir_if_empty(Path(dst)):
-                        break
+                    time.sleep(1)  # 等待系统完成卸载
+                    if not is_mount_point(dst_path):
+                        if remove_dir_if_empty(dst_path):
+                            break
+                        else:
+                            logger.warning(f"目录 {dst} 尝试 {i + 1} 次仍未变为空，未删除。")
                     else:
-                        logger.warning(f"目录 {dst} 尝试 {i+1} 次仍未变为空，未删除。")
+                        logger.warning(f"挂载点 {dst} 尝试 {i + 1} 次仍未完全卸载")
             except Exception as e2:
                 logger.error(f"Lazy 模式卸载 {dst} 也失败：{e2}")
 
@@ -134,6 +150,116 @@ def next_config(config):
 
 ################################################
 # 工具函数
+
+def is_mount_point(path: Path) -> bool:
+    """
+    检查路径是否为挂载点
+    """
+    try:
+        return path.is_mount()
+    except Exception as e:
+        logger.error(f"检查挂载点 {path} 时出错: {e}")
+        return False
+
+def get_mount_source(mount_point: Path) -> Optional[str]:
+    """
+    获取挂载点的源路径
+    通过解析 /proc/mounts 或使用 findmnt 命令
+    """
+    try:
+        # 方法1: 使用 findmnt 命令（更可靠）
+        result = subprocess.run(
+            ['findmnt', '-n', '-o', 'SOURCE', str(mount_point)],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        # 方法2: 解析 /proc/mounts
+        try:
+            with open('/proc/mounts', 'r') as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] == str(mount_point):
+                        return parts[0]
+        except Exception as e:
+            logger.error(f"读取 /proc/mounts 失败: {e}")
+    return None
+
+
+def handle_existing_mount(src_path: str, dst_path: str) -> bool:
+    """
+    处理已存在的挂载点
+    返回 True 表示需要进行挂载，False 表示跳过
+    """
+    dst_path_obj = Path(dst_path)
+
+    src_mount_source = get_mount_source(Path(src_path))
+
+    if is_mount_point(dst_path_obj):
+        current_source = get_mount_source(dst_path_obj)
+
+        if src_mount_source == current_source or src_mount_source in current_source:
+            logger.info(f"挂载点 {dst_path} 已存在且源路径相同，跳过")
+            return False
+        else:
+            logger.info(f"挂载点 {dst_path} 已存在但源路径不同 (当前: {current_source}, 新: {src_mount_source})，先卸载")
+            try:
+                subprocess.run(['umount', dst_path], check=True)
+                logger.info(f"成功卸载旧挂载点: {dst_path}")
+                return True
+            except subprocess.CalledProcessError as e:
+                logger.error(f"卸载旧挂载点失败: {e}")
+                # 尝试 lazy umount
+                try:
+                    subprocess.run(['umount', '-l', dst_path], check=True)
+                    logger.info(f"Lazy 模式卸载旧挂载点成功: {dst_path}")
+                    # 等待一下让系统完成卸载
+                    time.sleep(0.5)
+                    return True
+                except subprocess.CalledProcessError as e2:
+                    logger.error(f"Lazy 模式卸载也失败: {e2}")
+                    return False
+
+    # 不是挂载点，返回 True 继续原有逻辑
+    return True
+
+
+def get_all_mounts() -> Dict[str, str]:
+    """
+    获取系统中所有的挂载点映射
+    返回 {挂载点: 源路径} 的字典
+    """
+    mounts = {}
+    try:
+        with open('/proc/mounts', 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    source, target = parts[0], parts[1]
+                    mounts[target] = source
+    except Exception as e:
+        logger.error(f"读取挂载信息失败: {e}")
+    return mounts
+
+
+def verify_mount_status(config_targets: Set[Tuple[str, str]]):
+    """
+    验证配置的挂载状态，用于调试
+    """
+    all_mounts = get_all_mounts()
+
+    for src, dst in config_targets:
+        if dst in all_mounts:
+            actual_src = all_mounts[dst]
+            if actual_src == src:
+                logger.debug(f"✓ {dst} 正确挂载到 {src}")
+            else:
+                logger.warning(f"✗ {dst} 挂载源不匹配: 期望 {src}, 实际 {actual_src}")
+        else:
+            logger.warning(f"✗ {dst} 未挂载")
+
 
 def get_uids_in_group(group_name: str) -> List[int]:
     """
@@ -248,15 +374,34 @@ def list_section_mount_targets(section_cfg: MountConfig) -> Set[Tuple[str, str]]
 
     return section_mount_targets
 
+
 def mount(config_targets) -> Set[Tuple[str, str]]:
     current_targets = set()
+    skipped_targets = set()  # 记录跳过的挂载
+
     for src_path, dst_path in config_targets:
         try:
+            # 检查是否需要挂载
+            should_mount = handle_existing_mount(src_path, dst_path)
+
+            if not should_mount:
+                # 虽然跳过挂载，但仍然记录为当前有效的挂载
+                current_targets.add((src_path, dst_path))
+                skipped_targets.add((src_path, dst_path))
+                continue
+
+            # 执行挂载
             subprocess.run(['mount', '--bind', str(src_path), str(dst_path)], check=True)
             current_targets.add((src_path, dst_path))
             logger.info(f"挂载 {src_path} -> {dst_path} 完成")
+
         except Exception as e:
             logger.error(f"挂载失败: {e}")
+
+    # 记录统计信息
+    if skipped_targets:
+        logger.info(f"跳过了 {len(skipped_targets)} 个已存在的相同挂载")
+
     return current_targets
 
 ################################################
